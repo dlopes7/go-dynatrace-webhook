@@ -1,0 +1,5 @@
+{
+  "listenerPort": 5000,
+  "logLevel": "DEBUG",
+  "zabbixHost": "DYNATRACE"
+}
