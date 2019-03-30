@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/gorilla/mux"
@@ -11,6 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 )
 
 var logger = logging.MustGetLogger("webhook")
@@ -19,18 +23,28 @@ var format = logging.MustStringFormatter(
 )
 
 type Config struct {
-	ListenerPort int    `json:"listenerPort"`
-	LogLevel     string `json:"logLevel"`
-	ZabbixHost   string `json:"zabbixHost"`
+	ListenerPort         int    `json:"listenerPort"`
+	LogLevel             string `json:"logLevel"`
+	ZabbixHost           string `json:"zabbixHost"`
+	ZabbixServerHostname string `json:"zabbixServerHostname"`
+	ZabbixServerPort     int    `json:"zabbixServerPort"`
+	ZabbixItem           string `json:"zabbixItem"`
 }
 
 type Problem struct {
 	ProblemID string `json:"ProblemID"`
 }
 
+type Response struct {
+	Error   bool   `json:"error"`
+	Message string `json:"message"`
+}
+
 var config Config
 
 func ZabbixHandler(w http.ResponseWriter, r *http.Request) {
+
+	resp := Response{}
 
 	decoder := json.NewDecoder(r.Body)
 	var problem Problem
@@ -38,16 +52,62 @@ func ZabbixHandler(w http.ResponseWriter, r *http.Request) {
 	err := decoder.Decode(&problem)
 	if err != nil {
 		logger.Errorf("Could not parse the problem from the request body: %s", err.Error())
+		w.WriteHeader(http.StatusBadRequest)
+		resp = Response{
+			Error:   true,
+			Message: fmt.Sprintf("Could not parse the problem from the request body: %s", err.Error()),
+		}
+		json.NewEncoder(w).Encode(resp)
+		return
 	}
 
 	logger.Debugf("Parsed problem: %+v", problem)
 
-	logger.Debug("Attempting to execute zabbix_sender")
-	exec.Command("ls -ltrh")
+	var args = []string{
+		"-z", config.ZabbixServerHostname,
+		"-p", strconv.Itoa(config.ZabbixServerPort),
+		"-s", config.ZabbixHost,
+		"-k", config.ZabbixItem,
+		"-o", fmt.Sprintf("\"%s\"", problem.ProblemID),
+		"-vv"}
 
-	vars := mux.Vars(r)
+	logger.Debugf("Attempting to execute command: 'zabbix_sender %s'", strings.Join(args, " "))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "zabbix_sender", args...)
+
+	out, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		logger.Errorf("Timeout after 15 seconds executing zabbix_sender")
+		w.WriteHeader(http.StatusInternalServerError)
+		resp = Response{
+			Error:   true,
+			Message: "Timed out after 15 seconds waiting for zabbix_sender",
+		}
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	if err != nil {
+		logger.Errorf("Error executing zabbix_sender: %s Result: %s", err.Error(), out)
+		w.WriteHeader(http.StatusInternalServerError)
+		resp = Response{
+			Error:   true,
+			Message: fmt.Sprintf("Error executing zabbix_sender: %s", err.Error()),
+		}
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	logger.Debugf("Command result: %s", out)
+	resp = Response{
+		Error:   false,
+		Message: fmt.Sprintf("Zabbix Sender executed successfully: %s", out),
+	}
+
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Category: %v\n", vars["category"])
+	json.NewEncoder(w).Encode(resp)
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {
@@ -65,7 +125,6 @@ func main() {
 		panic(err)
 	}
 	exPath := filepath.Dir(ex)
-	fmt.Println(exPath)
 
 	folderPath := filepath.Join(exPath, "log")
 	err = os.MkdirAll(folderPath, os.ModePerm)
@@ -84,6 +143,7 @@ func main() {
 	logBackend := logging.NewLogBackend(lf, "", 0)
 	logging.SetFormatter(format)
 	logging.SetBackend(logBackend)
+	logger.Infof("Logging to %s", logPath)
 
 	// Read configuration
 	configFile, err := os.Open("config.json")
@@ -98,7 +158,11 @@ func main() {
 		logger.Fatalf("Could not parse the configuration file: %s", err.Error())
 	}
 
-	logging.SetLevel(logging.DEBUG, "webhook")
+	logLevel, err := logging.LogLevel(config.LogLevel)
+	if err != nil {
+		logger.Fatalf("Invalid log level %s, options are CRITICAL, ERROR, WARNING, INFO, DEBUG", config.LogLevel)
+	}
+	logging.SetLevel(logLevel, "webhook")
 
 	router := mux.NewRouter()
 	router.HandleFunc("/zabbix", ZabbixHandler).Methods("POST")
@@ -106,6 +170,3 @@ func main() {
 
 	log.Fatal(http.ListenAndServe(":5000", router))
 }
-
-// Senha WIFI 192.168.15.1
-// Contato vivo 7 dias = 99610 3054 Carlos Vivo
