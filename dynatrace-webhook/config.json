@@ -1,0 +1,8 @@
+{
+  "listenerPort": 5000,
+  "logLevel": "DEBUG",
+  "zabbixServerHostname": "zabbix.dlopes7.com",
+  "zabbixServerPort": 10051,
+  "zabbixHost": "DYNATRACE_ALERTS",
+  "zabbixItem": "alert"
+}

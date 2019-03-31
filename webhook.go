@@ -17,6 +17,9 @@ import (
 	"time"
 )
 
+// TODO: Add proper problem properties
+// TODO: Add key selection on Post Body?
+
 var logger = logging.MustGetLogger("webhook")
 var format = logging.MustStringFormatter(
 	`%{time:15:04:05.000} ▶ %{level} %{message}`,
@@ -32,7 +35,14 @@ type Config struct {
 }
 
 type Problem struct {
-	ProblemID string `json:"ProblemID"`
+	ProblemID          string `json:"ProblemID"`
+	State              string `json:"State"`
+	ProblemDetailsText string `json:"ProblemDetailsText"`
+	ProblemTitle       string `json:"ProblemTitle"`
+}
+
+func (p Problem) String() string {
+	return fmt.Sprintf("ProblemID: %s, State: %s, Title: %s, Details: %s", p.ProblemID, p.State, p.ProblemTitle, p.ProblemDetailsText)
 }
 
 type Response struct {
@@ -68,7 +78,7 @@ func ZabbixHandler(w http.ResponseWriter, r *http.Request) {
 		"-p", strconv.Itoa(config.ZabbixServerPort),
 		"-s", config.ZabbixHost,
 		"-k", config.ZabbixItem,
-		"-o", fmt.Sprintf("\"%s\"", problem.ProblemID),
+		"-o", fmt.Sprintf("\"%s\"", problem.String()),
 		"-vv"}
 
 	logger.Debugf("Attempting to execute command: 'zabbix_sender %s'", strings.Join(args, " "))
@@ -106,6 +116,7 @@ func ZabbixHandler(w http.ResponseWriter, r *http.Request) {
 		Message: fmt.Sprintf("Zabbix Sender executed successfully: %s", out),
 	}
 
+	logger.Infof("Request processed successfully: %+v", resp.Message)
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resp)
 }
@@ -119,14 +130,14 @@ func loggingMiddleware(next http.Handler) http.Handler {
 
 func main() {
 
-	// Set up logging
+	log.Println("Setting up logging...")
 	ex, err := os.Executable()
 	if err != nil {
 		panic(err)
 	}
 	exPath := filepath.Dir(ex)
 
-	folderPath := filepath.Join(exPath, "log")
+	folderPath := filepath.Join(exPath, "../log")
 	err = os.MkdirAll(folderPath, os.ModePerm)
 	if err != nil {
 		panic(err)
@@ -143,9 +154,9 @@ func main() {
 	logBackend := logging.NewLogBackend(lf, "", 0)
 	logging.SetFormatter(format)
 	logging.SetBackend(logBackend)
-	logger.Infof("Logging to %s", logPath)
+	log.Printf("Logging to '%s'", logPath)
 
-	// Read configuration
+	log.Println("Reading config.json...")
 	configFile, err := os.Open("config.json")
 	if err != nil {
 		logger.Fatalf("Could not read config.json: %s", err.Error())
@@ -158,15 +169,21 @@ func main() {
 		logger.Fatalf("Could not parse the configuration file: %s", err.Error())
 	}
 
+	log.Printf("Config read: %+v", config)
+
 	logLevel, err := logging.LogLevel(config.LogLevel)
 	if err != nil {
 		logger.Fatalf("Invalid log level %s, options are CRITICAL, ERROR, WARNING, INFO, DEBUG", config.LogLevel)
 	}
 	logging.SetLevel(logLevel, "webhook")
+	logger.Infof("Server will start with config %+v", config)
 
+	log.Println("Setting up routes...")
 	router := mux.NewRouter()
 	router.HandleFunc("/zabbix", ZabbixHandler).Methods("POST")
 	router.Use(loggingMiddleware)
 
-	log.Fatal(http.ListenAndServe(":5000", router))
+	log.Printf("Server started at port %d\n", config.ListenerPort)
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", config.ListenerPort), router))
+
 }
